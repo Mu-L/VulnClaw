@@ -12,6 +12,7 @@ from vulnclaw.web.services.report_service import (
     generate_target_report,
     list_reports,
     read_report_content,
+    resolve_report_path,
 )
 from vulnclaw.web.services.target_service import (
     clear_target,
@@ -201,10 +202,25 @@ def create_app():
             raise HTTPException(status_code=403, detail=str(exc)) from exc
         return content.model_dump(mode="json")
 
+    @app.get("/api/reports/download")
+    async def report_download(path: str):
+        try:
+            report_path = resolve_report_path(path)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        media_type = "text/html" if report_path.suffix.lower() == ".html" else "text/markdown"
+        return FileResponse(report_path, media_type=media_type, filename=report_path.name)
+
     @app.post("/api/reports/target")
     async def report_target(request: ReportGenerateRequest):
         try:
-            path = generate_target_report(request.target, request.output_path)
+            path = generate_target_report(
+                request.target,
+                request.output_path,
+                request.report_format,
+            )
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"status": "ok", "path": path}

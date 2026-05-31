@@ -7,11 +7,12 @@ export interface NavItem<T extends string> {
 
 interface SidebarProps<T extends string> {
   activeView: T;
+  activeNavView?: T;
   nav: NavItem<T>[];
   onSelectView: (view: T) => void;
 }
 
-export function Sidebar<T extends string>({ activeView, nav, onSelectView }: SidebarProps<T>) {
+export function Sidebar<T extends string>({ activeView, activeNavView = activeView, nav, onSelectView }: SidebarProps<T>) {
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -28,7 +29,7 @@ export function Sidebar<T extends string>({ activeView, nav, onSelectView }: Sid
           <button
             key={item.key}
             type="button"
-            className={`nav-item ${activeView === item.key ? "active" : ""}`}
+            className={`nav-item ${activeNavView === item.key ? "active" : ""}`}
             onClick={() => onSelectView(item.key)}
           >
             <span className="nav-icon" aria-hidden="true">{item.icon}</span>
@@ -41,8 +42,8 @@ export function Sidebar<T extends string>({ activeView, nav, onSelectView }: Sid
       </nav>
 
       <div className="sidebar-footer">
-        <span>Web Console</span>
-        <strong>ToC Preview</strong>
+        <span>授权优先</span>
+        <strong>本地 Web 工作台</strong>
       </div>
     </aside>
   );

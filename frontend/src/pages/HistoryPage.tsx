@@ -1,12 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { rollbackTarget } from "../api/web";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { SectionCard } from "../components/SectionCard";
 import { useTargetDiffQuery, useTargetSnapshotsQuery, useTargetsQuery, useTasksQuery } from "../hooks/queries";
+import { formatPhaseLabel, formatResumeStrategy, formatTaskCommand, formatTaskStatus, formatTaskTitle } from "../utils/taskLabels";
 
 interface HistoryPageProps {
   selectedTarget: string | null;
   onSelectTarget: (target: string | null) => void;
+  onOpenHome: () => void;
+  onOpenReports: (target: string) => void;
   onOpenTarget: (target: string) => void;
 }
 
@@ -17,7 +21,26 @@ function formatTime(value?: string): string {
   return date.toLocaleString();
 }
 
-export function HistoryPage({ selectedTarget, onSelectTarget, onOpenTarget }: HistoryPageProps) {
+function diffConclusion(diff: {
+  added_findings: string[];
+  updated_findings: string[];
+  added_steps: string[];
+  added_recon_assets: string[];
+}): string {
+  const total =
+    diff.added_findings.length
+    + diff.updated_findings.length
+    + diff.added_steps.length
+    + diff.added_recon_assets.length;
+  if (diff.added_findings.length || diff.updated_findings.length) {
+    return "风险内容发生变化，建议回到风险结果页复核影响范围。";
+  }
+  if (total > 0) return "检查过程有新增信息，但暂未看到风险项变化。";
+  return "两次快照之间暂无明显新增内容。";
+}
+
+export function HistoryPage({ selectedTarget, onSelectTarget, onOpenHome, onOpenReports, onOpenTarget }: HistoryPageProps) {
+  const queryClient = useQueryClient();
   const targetsQuery = useTargetsQuery();
   const tasksQuery = useTasksQuery();
   const [localTarget, setLocalTarget] = useState("");
@@ -71,7 +94,13 @@ export function HistoryPage({ selectedTarget, onSelectTarget, onOpenTarget }: Hi
       setMessage(null);
       await rollbackTarget(targetValue, snapshotId);
       setMessage(`已恢复 ${targetValue} 到快照 ${snapshotId}`);
-      await snapshotsQuery.refetch();
+      await Promise.all([
+        snapshotsQuery.refetch(),
+        targetsQuery.refetch(),
+        queryClient.invalidateQueries({ queryKey: ["target", targetValue] }),
+        queryClient.invalidateQueries({ queryKey: ["target-preview", targetValue] }),
+        queryClient.invalidateQueries({ queryKey: ["target-diff", targetValue] }),
+      ]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "快照恢复失败");
     } finally {
@@ -130,40 +159,72 @@ export function HistoryPage({ selectedTarget, onSelectTarget, onOpenTarget }: Hi
         <SectionCard title="测试记录" copy="最近通过 Web 后端任务管理器创建的检查。">
           <div className="list list-scroll history-list">
             {targetTasks.slice(0, 18).map((task) => (
-              <button
+              <article
                 key={task.task_id}
-                className="list-item list-button history-task-item"
-                type="button"
-                onClick={() => onOpenTarget(task.target)}
+                className="list-item history-task-item"
               >
-                <strong>{task.command} · {task.target}</strong>
-                <span>{task.status}</span>
-                <span className="muted-inline">{task.latest_phase ?? "暂无阶段"}</span>
+                <strong>{formatTaskTitle(task.command, task.target)}</strong>
+                <span>{formatTaskStatus(task.status)}</span>
+                <span className="muted-inline">{formatPhaseLabel(task.latest_phase)}</span>
                 <span className="muted-inline">{formatTime(task.created_at)}</span>
-              </button>
+                <div className="button-row compact-row">
+                  <button className="secondary-btn" type="button" onClick={() => onOpenTarget(task.target)}>
+                    查看风险
+                  </button>
+                  <button className="secondary-btn" type="button" onClick={() => onOpenReports(task.target)}>
+                    查看报告
+                  </button>
+                </div>
+              </article>
             ))}
-            {!targetTasks.length && <div className="empty-state">暂无任务记录。</div>}
+            {!targetTasks.length && (
+              <div className="empty-state history-empty-state">
+                <strong>暂无任务记录</strong>
+                <span>从首页开始一次授权安全检查后，任务时间线会自动汇总到这里。</span>
+                <button className="secondary-btn" onClick={onOpenHome} type="button">
+                  回首页开始检查
+                </button>
+              </div>
+            )}
           </div>
         </SectionCard>
 
-        <SectionCard title="目标状态" copy="点击目标可回到风险结果页查看可读结论。">
+        <SectionCard title="目标状态" copy="从目标状态继续查看风险结论，或直接进入报告中心生成交付物。">
           <div className="list list-scroll history-list">
             {targetsQuery.data?.slice(0, 18).map((target) => (
-              <button
+              <article
                 key={target.target}
-                className={`list-item list-button ${targetValue === target.target ? "selected-item" : ""}`}
-                type="button"
-                onClick={() => {
-                  onSelectTarget(target.target);
-                  onOpenTarget(target.target);
-                }}
+                className={`list-item ${targetValue === target.target ? "selected-item" : ""}`}
               >
                 <strong>{target.target}</strong>
                 <span>{target.verified_count} 已验证 / {target.pending_count} 待复核</span>
-                <span className="muted-inline">{target.resume_strategy || "暂无恢复策略"}</span>
-              </button>
+                <span className="muted-inline">{formatResumeStrategy(target.resume_strategy)}</span>
+                <div className="button-row compact-row">
+                  <button
+                    className="secondary-btn"
+                    type="button"
+                    onClick={() => {
+                      onSelectTarget(target.target);
+                      onOpenTarget(target.target);
+                    }}
+                  >
+                    查看风险
+                  </button>
+                  <button className="secondary-btn" type="button" onClick={() => onOpenReports(target.target)}>
+                    查看报告
+                  </button>
+                </div>
+              </article>
             ))}
-            {!targetsQuery.data?.length && <div className="empty-state">暂无目标状态。</div>}
+            {!targetsQuery.data?.length && (
+              <div className="empty-state history-empty-state">
+                <strong>暂无目标状态</strong>
+                <span>输入授权目标并完成检查后，这里会显示风险结论、恢复建议和报告入口。</span>
+                <button className="secondary-btn" onClick={onOpenHome} type="button">
+                  去首页设置目标
+                </button>
+              </div>
+            )}
           </div>
         </SectionCard>
       </div>
@@ -174,10 +235,10 @@ export function HistoryPage({ selectedTarget, onSelectTarget, onOpenTarget }: Hi
             {snapshotsQuery.data?.map((snapshot) => (
               <div key={snapshot.snapshot_id} className="list-item">
                 <strong>{snapshot.snapshot_id}</strong>
-                <span>{snapshot.last_command}</span>
+                <span>{formatTaskCommand(snapshot.last_command)}</span>
                 <span className="muted-inline">{formatTime(snapshot.last_saved_at)}</span>
                 <span className="muted-inline">
-                  verified={snapshot.verified_findings} pending={snapshot.pending_findings}
+                  已验证 {snapshot.verified_findings} / 待复核 {snapshot.pending_findings}
                 </span>
                 <div className="button-row compact-row">
                   <button
@@ -225,6 +286,15 @@ export function HistoryPage({ selectedTarget, onSelectTarget, onOpenTarget }: Hi
 
           {diffQuery.data ? (
             <div className="list dense-list">
+              <div className="history-diff-summary">
+                <strong>{diffConclusion(diffQuery.data)}</strong>
+                <div>
+                  <span>新增风险 {diffQuery.data.added_findings.length}</span>
+                  <span>更新风险 {diffQuery.data.updated_findings.length}</span>
+                  <span>新增步骤 {diffQuery.data.added_steps.length}</span>
+                  <span>新增资产 {diffQuery.data.added_recon_assets.length}</span>
+                </div>
+              </div>
               <div className="list-item">
                 <strong>新增风险</strong>
                 {diffQuery.data.added_findings.length ? diffQuery.data.added_findings.map((item) => <span key={item}>{item}</span>) : <span className="muted-inline">无</span>}
@@ -252,6 +322,7 @@ export function HistoryPage({ selectedTarget, onSelectTarget, onOpenTarget }: Hi
         open={Boolean(pendingRollbackId)}
         title="恢复历史快照"
         copy="恢复快照会把当前目标状态切回所选时间点。这个动作不会删除报告文件，但可能影响后续风险结果展示。"
+        tone="danger"
         confirmLabel="确认恢复"
         onCancel={() => setPendingRollbackId(null)}
         onConfirm={() => {

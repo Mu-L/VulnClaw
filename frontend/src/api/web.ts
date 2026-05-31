@@ -16,20 +16,67 @@ import type {
 } from "../types/api";
 
 async function requestJson<T>(input: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(input, {
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {}),
-    },
-    ...init,
-  });
-
-  if (!response.ok) {
-    throw new Error(`Request failed: ${response.status}`);
+  let response: Response;
+  try {
+    response = await fetch(input, {
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        ...(init?.headers ?? {}),
+      },
+      ...init,
+    });
+  } catch {
+    throw new Error("无法访问 VulnClaw 后端 API，请确认已运行 vulnclaw web 后重新连接。");
   }
 
-  return response.json() as Promise<T>;
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new Error(
+      detail
+        ? `请求失败 (${response.status}): ${detail}`
+        : `请求失败 (${response.status})，请稍后重试或查看高级诊断。`,
+    );
+  }
+
+  try {
+    return await response.json() as T;
+  } catch {
+    throw new Error("后端 API 返回了非 JSON 内容，请确认已通过 vulnclaw web 启动后端服务。");
+  }
+}
+
+async function readErrorDetail(response: Response): Promise<string> {
+  try {
+    const contentType = response.headers.get("content-type") ?? "";
+    if (contentType.includes("application/json")) {
+      const payload = await response.json() as { detail?: unknown; message?: unknown; error?: unknown };
+      return summarizeErrorDetail(stringifyErrorValue(payload.detail ?? payload.message ?? payload.error));
+    }
+    return summarizeErrorDetail(await response.text());
+  } catch {
+    return "";
+  }
+}
+
+function summarizeErrorDetail(value: string): string {
+  const normalized = value
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized) return "";
+  if (normalized.length <= 240) return normalized;
+  return `${normalized.slice(0, 240)}...`;
+}
+
+function stringifyErrorValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value == null) return "";
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }
 
 export function getConfig(): Promise<ConfigView> {
@@ -87,6 +134,10 @@ export function getReportContent(path: string): Promise<ReportContentView> {
   return requestJson<ReportContentView>(`/api/reports/content?path=${encodeURIComponent(path)}`);
 }
 
+export function getReportDownloadUrl(path: string): string {
+  return `/api/reports/download?path=${encodeURIComponent(path)}`;
+}
+
 export function rollbackTarget(target: string, snapshotId: string): Promise<{ status: string; target: string; snapshot_id: string }> {
   return requestJson(`/api/targets/${encodeURIComponent(target)}/rollback`, {
     method: "POST",
@@ -100,10 +151,13 @@ export function clearTargetState(target: string): Promise<{ status: string; targ
   });
 }
 
-export function generateTargetReport(target: string): Promise<{ status: string; path: string }> {
+export function generateTargetReport(
+  target: string,
+  reportFormat: "markdown" | "html" = "markdown",
+): Promise<{ status: string; path: string }> {
   return requestJson("/api/reports/target", {
     method: "POST",
-    body: JSON.stringify({ target }),
+    body: JSON.stringify({ target, report_format: reportFormat }),
   });
 }
 

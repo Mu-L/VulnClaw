@@ -1,4 +1,5 @@
 import { StatusDot } from "./StatusDot";
+import { formatTaskStatus } from "../utils/taskLabels";
 
 interface TopbarProps {
   eyebrow: string;
@@ -17,6 +18,8 @@ function statusTone(status?: string): "idle" | "ok" | "warn" | "danger" | "runni
 }
 
 export function Topbar({ eyebrow, title, copy, selectedTarget, activeTaskStatus }: TopbarProps) {
+  const targetLabel = selectedTarget ? `当前目标: ${selectedTarget}` : "未选择目标";
+
   return (
     <header className="topbar">
       <div>
@@ -25,8 +28,8 @@ export function Topbar({ eyebrow, title, copy, selectedTarget, activeTaskStatus 
         <p>{copy}</p>
       </div>
       <div className="topbar-status">
-        <StatusDot tone={statusTone(activeTaskStatus)} label={activeTaskStatus ? `任务 ${activeTaskStatus}` : "空闲"} />
-        <StatusDot tone={selectedTarget ? "ok" : "idle"} label={selectedTarget ? "已选择目标" : "未选择目标"} />
+        <StatusDot tone={statusTone(activeTaskStatus)} label={activeTaskStatus ? formatTaskStatus(activeTaskStatus) : "空闲"} />
+        <StatusDot tone={selectedTarget ? "ok" : "idle"} label={targetLabel} />
       </div>
     </header>
   );

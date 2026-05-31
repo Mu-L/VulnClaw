@@ -12,13 +12,19 @@ interface ViewMeta {
 
 interface AppShellProps<T extends string> {
   activeView: T;
+  activeNavView?: T;
   nav: NavItem<T>[];
   meta: ViewMeta;
+  backendUnavailable?: boolean;
+  backendError?: string;
+  onRetryBackend?: () => void;
   selectedTarget: string | null;
   activeTask: TaskRecord | null;
   latestEvent: TaskEvent | null;
   onSelectView: (view: T) => void;
+  onOpenAdvanced: () => void;
   onOpenBoundary: () => void;
+  onOpenReports: () => void;
   onOpenTarget: (target: string) => void;
   onStopTask: () => void;
   children: ReactNode;
@@ -26,20 +32,26 @@ interface AppShellProps<T extends string> {
 
 export function AppShell<T extends string>({
   activeView,
+  activeNavView,
   nav,
   meta,
+  backendUnavailable = false,
+  backendError,
+  onRetryBackend,
   selectedTarget,
   activeTask,
   latestEvent,
   onSelectView,
+  onOpenAdvanced,
   onOpenBoundary,
+  onOpenReports,
   onOpenTarget,
   onStopTask,
   children,
 }: AppShellProps<T>) {
   return (
     <div className="app-shell">
-      <Sidebar activeView={activeView} nav={nav} onSelectView={onSelectView} />
+      <Sidebar activeView={activeView} activeNavView={activeNavView} nav={nav} onSelectView={onSelectView} />
       <main className="workspace">
         <Topbar
           eyebrow={meta.eyebrow}
@@ -48,10 +60,28 @@ export function AppShell<T extends string>({
           selectedTarget={selectedTarget}
           activeTaskStatus={activeTask?.status}
         />
+        {backendUnavailable && (
+          <section className="connection-banner" role="status">
+            <div>
+              <strong>无法连接 VulnClaw 后端</strong>
+              <span>
+                请确认已运行 <code>vulnclaw web</code>，并通过后端地址打开 Web UI。当前页面只能展示静态界面。
+              </span>
+              {backendError && <small>{backendError}</small>}
+            </div>
+            {onRetryBackend && (
+              <button className="secondary-btn" onClick={onRetryBackend} type="button">
+                重新连接
+              </button>
+            )}
+          </section>
+        )}
         <ActiveTaskBanner
           task={activeTask}
           latestEvent={latestEvent}
+          onOpenAdvanced={onOpenAdvanced}
           onOpenBoundary={onOpenBoundary}
+          onOpenReports={onOpenReports}
           onOpenTarget={onOpenTarget}
           onStop={onStopTask}
         />

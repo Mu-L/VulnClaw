@@ -20,7 +20,10 @@ class TaskOptions(BaseModel):
     cve: Optional[str] = Field(default=None, description="Exploit command CVE hint")
     cmd: Optional[str] = Field(default=None, description="Exploit command execution hint")
     only_port: Optional[int] = Field(
-        default=None, description="Restrict task scope to a single port"
+        default=None,
+        ge=1,
+        le=65535,
+        description="Restrict task scope to a single port",
     )
     only_host: Optional[str] = Field(
         default=None, description="Restrict task scope to a single host"
@@ -165,6 +168,7 @@ class TargetStateDiffView(BaseModel):
 class ReportGenerateRequest(BaseModel):
     target: str
     output_path: Optional[str] = None
+    report_format: str = "markdown"
 
 
 class ConfigView(BaseModel):

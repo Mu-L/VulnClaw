@@ -1,12 +1,23 @@
 import { useEffect, useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { generateTargetReport } from "../api/web";
 import { SectionCard } from "../components/SectionCard";
 import { useTargetPreviewQuery, useTargetQuery, useTargetsQuery } from "../hooks/queries";
+import { loadUiPreferences, subscribeUiPreferences, type UiPreferences } from "../utils/preferences";
+import {
+  countConstraintViolations,
+  formatConstraintSummary,
+  formatFindingStatus,
+  formatPhaseLabel,
+  formatResumeStrategy,
+  formatSeverityLabel,
+} from "../utils/taskLabels";
 
 interface RiskResultsPageProps {
   selectedTarget: string | null;
   onSelectTarget: (target: string | null) => void;
-  onOpenReports: () => void;
+  onOpenHome: () => void;
+  onOpenReports: (path?: string) => void;
   onOpenBoundary: () => void;
 }
 
@@ -19,6 +30,17 @@ interface FindingCard {
   impact: string;
   recommendation: string;
   type: string;
+}
+
+interface ActionCard {
+  title: string;
+  copy: string;
+  tone: "primary" | "warn" | "safe";
+}
+
+interface GeneratedReportState {
+  format: UiPreferences["reportFormat"];
+  path: string;
 }
 
 function asText(value: unknown, fallback = ""): string {
@@ -36,9 +58,10 @@ function normalizeSeverity(value: unknown): string {
 }
 
 function severityTone(severity: string): "danger" | "warn" | "ok" | "info" {
-  if (severity === "Critical" || severity === "High") return "danger";
-  if (severity === "Medium") return "warn";
-  if (severity === "Low") return "ok";
+  const normalized = severity.toLowerCase();
+  if (normalized.includes("critical") || normalized.includes("high")) return "danger";
+  if (normalized.includes("medium") || normalized.includes("warn")) return "warn";
+  if (normalized.includes("low")) return "ok";
   return "info";
 }
 
@@ -74,13 +97,75 @@ function resultConclusion(verified: number, pending: number, manualReview: numbe
   return "暂未发现明确风险，可结合更深模式继续检查。";
 }
 
-export function RiskResultsPage({ selectedTarget, onSelectTarget, onOpenReports, onOpenBoundary }: RiskResultsPageProps) {
+function actionCardFromSignal(signal: string): ActionCard {
+  const normalized = signal.toLowerCase();
+  if (normalized.includes("report")) {
+    return {
+      title: "生成并保存报告",
+      copy: "把本次检查结论整理成可交付的 Markdown / HTML 报告。",
+      tone: "primary",
+    };
+  }
+  if (normalized.includes("boundary") || normalized.includes("constraint")) {
+    return {
+      title: "查看安全边界",
+      copy: "确认主机、端口、路径和动作范围是否仍符合授权。",
+      tone: "safe",
+    };
+  }
+  if (normalized.includes("verify") || normalized.includes("manual")) {
+    return {
+      title: "人工复核关键线索",
+      copy: "优先确认高价值线索是否真实可复现，再决定是否扩大验证。",
+      tone: "warn",
+    };
+  }
+  if (normalized.includes("scan") || normalized.includes("recon")) {
+    return {
+      title: "继续补充检查",
+      copy: "沿当前范围继续收集入口、服务和潜在风险线索。",
+      tone: "primary",
+    };
+  }
+  return {
+    title: signal,
+    copy: "来自后端恢复计划的建议动作，建议结合当前目标上下文判断。",
+    tone: "primary",
+  };
+}
+
+function buildActionCards(actions: string[], pending: number, manualReview: number): ActionCard[] {
+  const cards = actions.slice(0, 6).map(actionCardFromSignal);
+  if (!cards.length && (pending > 0 || manualReview > 0)) {
+    cards.push({
+      title: "先复核待确认线索",
+      copy: "当前存在待复核内容，建议先确认证据和影响范围，再生成正式报告。",
+      tone: "warn",
+    });
+  }
+  if (!cards.length) {
+    cards.push({
+      title: "生成报告或继续观察",
+      copy: "当前没有明确下一步动作，可生成报告留档，或在更明确授权范围内继续检查。",
+      tone: "safe",
+    });
+  }
+  return cards;
+}
+
+export function RiskResultsPage({ selectedTarget, onSelectTarget, onOpenHome, onOpenReports, onOpenBoundary }: RiskResultsPageProps) {
+  const queryClient = useQueryClient();
   const targetsQuery = useTargetsQuery();
   const [localTarget, setLocalTarget] = useState("");
-  const [message, setMessage] = useState<string | null>(null);
+  const [generatedReport, setGeneratedReport] = useState<GeneratedReportState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
+  const [reportFormat, setReportFormat] = useState<UiPreferences["reportFormat"]>(() => loadUiPreferences().reportFormat);
   const [showRaw, setShowRaw] = useState(false);
+
+  useEffect(() => subscribeUiPreferences((preferences) => {
+    setReportFormat(preferences.reportFormat);
+  }), []);
 
   useEffect(() => {
     if (selectedTarget) {
@@ -101,17 +186,25 @@ export function RiskResultsPage({ selectedTarget, onSelectTarget, onOpenReports,
   const preview = previewQuery.data;
 
   const findings = useMemo(() => extractFindingCards(target?.raw?.findings), [target]);
-  const criticalOrHigh = findings.filter((item) => item.severity === "Critical" || item.severity === "High").length;
-  const boundaryBlocks = target?.constraint_violation_events.length ?? target?.constraint_violations.length ?? 0;
+  const criticalOrHigh = findings.filter((item) => severityTone(item.severity) === "danger").length;
+  const boundaryBlocks = countConstraintViolations(
+    target?.constraint_violation_events,
+    target?.constraint_violations,
+  );
   const nextActions = preview?.next_actions ?? [];
+  const actionCards = useMemo(
+    () => buildActionCards(nextActions, target?.pending_count ?? 0, target?.manual_review_count ?? 0),
+    [nextActions, target?.pending_count, target?.manual_review_count],
+  );
 
   async function handleGenerateReport() {
     if (!targetValue) return;
     try {
       setGenerating(true);
       setError(null);
-      const result = await generateTargetReport(targetValue);
-      setMessage(`报告已生成: ${result.path}`);
+      const result = await generateTargetReport(targetValue, reportFormat);
+      setGeneratedReport({ format: reportFormat, path: result.path });
+      await queryClient.invalidateQueries({ queryKey: ["reports"] });
     } catch (err) {
       setError(err instanceof Error ? err.message : "报告生成失败");
     } finally {
@@ -124,7 +217,7 @@ export function RiskResultsPage({ selectedTarget, onSelectTarget, onOpenReports,
       <SectionCard
         title="目标风险概览"
         copy="优先展示用户真正关心的结论、风险数量、证据和下一步。"
-        aside={<span className="status-badge">{target?.phase ?? "等待目标"}</span>}
+        aside={<span className="status-badge">{target ? formatPhaseLabel(target.phase) : "等待目标"}</span>}
       >
         <label className="field">
           <span>目标</span>
@@ -134,7 +227,7 @@ export function RiskResultsPage({ selectedTarget, onSelectTarget, onOpenReports,
               const value = event.target.value || null;
               setLocalTarget(value ?? "");
               onSelectTarget(value);
-              setMessage(null);
+              setGeneratedReport(null);
               setError(null);
             }}
           >
@@ -184,9 +277,9 @@ export function RiskResultsPage({ selectedTarget, onSelectTarget, onOpenReports,
 
             <div className="button-row">
               <button type="button" className="primary-btn" disabled={generating} onClick={handleGenerateReport}>
-                {generating ? "生成中..." : "生成报告"}
+                {generating ? "生成中..." : `生成 ${reportFormat === "html" ? "HTML" : "Markdown"} 报告`}
               </button>
-              <button type="button" className="secondary-btn" onClick={onOpenReports}>
+              <button type="button" className="secondary-btn" onClick={() => onOpenReports()}>
                 查看报告中心
               </button>
               <button type="button" className="secondary-btn" onClick={onOpenBoundary}>
@@ -194,27 +287,57 @@ export function RiskResultsPage({ selectedTarget, onSelectTarget, onOpenReports,
               </button>
             </div>
 
-            {message && <div className="success-box">{message}</div>}
+            {generatedReport && (
+              <div className="report-delivery-card risk-delivery-card">
+                <div>
+                  <span>交付状态</span>
+                  <strong>报告已生成</strong>
+                </div>
+                <div>
+                  <span>报告格式</span>
+                  <strong>{generatedReport.format === "html" ? "HTML" : "Markdown"}</strong>
+                </div>
+                <div>
+                  <span>文件位置</span>
+                  <strong>{generatedReport.path}</strong>
+                </div>
+                <div className="risk-delivery-action">
+                  <button className="primary-btn" onClick={() => onOpenReports(generatedReport.path)} type="button">
+                    去报告中心预览
+                  </button>
+                </div>
+              </div>
+            )}
             {error && <div className="error-box">{error}</div>}
           </>
         ) : (
-          <div className="empty-state">{targetQuery.isLoading ? "正在加载目标..." : "还没有可展示的目标结果。"}</div>
+          <div className="empty-state risk-empty-state">
+            <strong>{targetQuery.isLoading ? "正在加载目标..." : "还没有可展示的目标结果"}</strong>
+            {!targetQuery.isLoading && (
+              <>
+                <span>先从首页输入授权目标并完成一次检查，VulnClaw 会把风险、证据和下一步建议整理到这里。</span>
+                <button className="secondary-btn" type="button" onClick={onOpenHome}>
+                  回首页开始检查
+                </button>
+              </>
+            )}
+          </div>
         )}
       </SectionCard>
 
       {target && (
         <div className="split-grid">
-          <SectionCard title="风险列表" copy="按严重程度和验证状态展示，原始 JSON 默认收起。">
+          <SectionCard title="风险列表" copy="按严重程度和验证状态展示，技术记录默认收起。">
             <div className="risk-list">
               {findings.length ? (
                 findings.map((finding) => (
                   <article key={finding.id} className="risk-item">
                     <div className="risk-item-head">
                       <div>
-                        <span className={`severity-badge severity-${severityTone(finding.severity)}`}>{finding.severity}</span>
+                        <span className={`severity-badge severity-${severityTone(finding.severity)}`}>{formatSeverityLabel(finding.severity)}</span>
                         <h4>{finding.title}</h4>
                       </div>
-                      <span className="status-badge">{finding.status}</span>
+                      <span className="status-badge">{formatFindingStatus(finding.status)}</span>
                     </div>
                     <div className="risk-detail-grid">
                       <div>
@@ -246,16 +369,19 @@ export function RiskResultsPage({ selectedTarget, onSelectTarget, onOpenReports,
             <div className="list dense-list">
               <div className="list-item">
                 <strong>恢复策略</strong>
-                <span>{target.resume_strategy || preview?.resume_strategy || "暂无策略"}</span>
+                <span>{formatResumeStrategy(target.resume_strategy || preview?.resume_strategy)}</span>
                 <span className="muted-inline">{target.resume_reason || preview?.resume_reason || "暂无说明"}</span>
               </div>
               <div className="list-item">
                 <strong>推荐动作</strong>
-                {nextActions.length ? (
-                  nextActions.slice(0, 6).map((item) => <span key={item}>{item}</span>)
-                ) : (
-                  <span className="muted-inline">暂无推荐动作。</span>
-                )}
+                <div className="risk-action-grid">
+                  {actionCards.map((item) => (
+                    <article key={`${item.title}-${item.copy}`} className={`risk-action-card risk-action-card-${item.tone}`}>
+                      <strong>{item.title}</strong>
+                      <span>{item.copy}</span>
+                    </article>
+                  ))}
+                </div>
               </div>
               <div className="list-item">
                 <strong>优先目标</strong>
@@ -267,9 +393,7 @@ export function RiskResultsPage({ selectedTarget, onSelectTarget, onOpenReports,
               </div>
               <div className="list-item">
                 <strong>安全边界</strong>
-                <span className="muted-inline">
-                  {Object.keys(target.constraints).length ? JSON.stringify(target.constraints) : "未设置额外边界"}
-                </span>
+                <span className="muted-inline">{formatConstraintSummary(target.constraints)}</span>
               </div>
             </div>
           </SectionCard>
@@ -279,7 +403,7 @@ export function RiskResultsPage({ selectedTarget, onSelectTarget, onOpenReports,
       {target && (
         <SectionCard
           title="技术详情"
-          copy="高级用户可以展开查看原始 Target State，普通用户默认不需要阅读。"
+          copy="高级用户可以展开查看后端保存的原始状态记录，普通用户默认不需要阅读。"
           aside={
             <button type="button" className="text-btn inline-text-btn" onClick={() => setShowRaw((value) => !value)}>
               {showRaw ? "收起" : "展开"}
@@ -291,7 +415,7 @@ export function RiskResultsPage({ selectedTarget, onSelectTarget, onOpenReports,
               <pre>{JSON.stringify(target.raw, null, 2)}</pre>
             </div>
           ) : (
-            <div className="empty-state">原始状态已收起。</div>
+            <div className="empty-state">技术记录已收起。</div>
           )}
         </SectionCard>
       )}

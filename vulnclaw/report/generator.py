@@ -324,7 +324,11 @@ def generate_report_from_file(session_path: str) -> Path:
     return generate_report(session)
 
 
-def generate_report_from_target_state(target_state: dict[str, Any]) -> Path:
+def generate_report_from_target_state(
+    target_state: dict[str, Any],
+    report_format: str = "markdown",
+    output_path: str | None = None,
+) -> Path:
     """Generate a report from a target-state snapshot."""
     raw = dict(target_state)
     target_state_context = {
@@ -335,7 +339,12 @@ def generate_report_from_target_state(target_state: dict[str, Any]) -> Path:
         "finding_meta": raw.pop("finding_meta", None),
     }
     session = SessionState(**raw)
-    return generate_report(session, target_state_context=target_state_context)
+    return generate_report(
+        session,
+        output_path=output_path,
+        report_format=report_format,
+        target_state_context=target_state_context,
+    )
 
 
 def _summarize_attack_surface(session: SessionState) -> str:

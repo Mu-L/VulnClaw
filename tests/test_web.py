@@ -182,6 +182,36 @@ class TestWebServices:
         path = report_service.generate_target_report("https://example.com", str(out))
         assert Path(path).exists()
 
+    def test_web_report_service_generates_html_target_report(self, monkeypatch, tmp_path):
+        import vulnclaw.target_state.store as store_mod
+        import vulnclaw.web.services.report_service as report_service
+        from vulnclaw.agent.context import SessionState, VulnerabilityFinding
+
+        monkeypatch.setattr(store_mod, "TARGETS_DIR", tmp_path / "targets")
+        monkeypatch.setattr(report_service, "SESSIONS_DIR", tmp_path / "sessions")
+
+        state = SessionState(target="https://example.com")
+        finding = VulnerabilityFinding(
+            title="Verified RCE",
+            severity="Critical",
+            vuln_type="RCE",
+            evidence="https://example.com/admin/exec",
+        )
+        finding.mark_verified(note="whoami returned www-data")
+        state.add_finding(finding)
+        store_mod.save_target_state("https://example.com", state, command="scan")
+
+        path = report_service.generate_target_report(
+            "https://example.com",
+            report_format="html",
+        )
+        assert Path(path).suffix == ".html"
+        assert Path(path).exists()
+
+        content = report_service.read_report_content(path)
+        assert content.kind == "html"
+        assert "<!doctype html>" in content.content
+
     def test_web_report_service_reads_report_content(self, monkeypatch, tmp_path):
         import vulnclaw.web.services.report_service as report_service
 
@@ -194,6 +224,44 @@ class TestWebServices:
         result = report_service.read_report_content(str(report_path))
         assert result.kind == "markdown"
         assert "# demo" in result.content
+
+    def test_web_report_service_resolves_report_path_safely(self, monkeypatch, tmp_path):
+        import vulnclaw.web.services.report_service as report_service
+
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        report = sessions_dir / "demo.html"
+        report.write_text("<!doctype html><p>demo</p>", encoding="utf-8")
+        outside = tmp_path / "outside.html"
+        outside.write_text("outside", encoding="utf-8")
+
+        monkeypatch.setattr(report_service, "SESSIONS_DIR", sessions_dir)
+
+        assert report_service.resolve_report_path(str(report)) == report.resolve()
+        with pytest.raises(PermissionError):
+            report_service.resolve_report_path(str(outside))
+
+    def test_web_report_service_lists_reports_by_modified_time(self, monkeypatch, tmp_path):
+        import os
+
+        import vulnclaw.web.services.report_service as report_service
+
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        old_markdown = sessions_dir / "old.md"
+        new_html = sessions_dir / "new.html"
+        old_markdown.write_text("# old", encoding="utf-8")
+        new_html.write_text("<!doctype html><p>new</p>", encoding="utf-8")
+        os.utime(old_markdown, (1_700_000_000, 1_700_000_000))
+        os.utime(new_html, (1_700_000_100, 1_700_000_100))
+
+        monkeypatch.setattr(report_service, "SESSIONS_DIR", sessions_dir)
+        result = report_service.list_reports()
+
+        assert result[0]["name"] == "new.html"
+        assert result[0]["kind"] == "html"
+        assert result[1]["name"] == "old.md"
+        assert result[1]["kind"] == "markdown"
 
     @pytest.mark.asyncio
     async def test_web_task_manager_event_flow(self):
@@ -282,6 +350,17 @@ class TestWebServices:
         assert "Blocked path /internal" in prompt
         assert "Only allowed actions: recon, scan" in prompt
         assert "Blocked actions: exploit" in prompt
+
+    def test_web_task_options_reject_invalid_only_port(self):
+        from pydantic import ValidationError
+
+        from vulnclaw.web.schemas import TaskOptions
+
+        with pytest.raises(ValidationError):
+            TaskOptions(only_port=0)
+        with pytest.raises(ValidationError):
+            TaskOptions(only_port=65536)
+        assert TaskOptions(only_port=443).only_port == 443
 
     def test_web_task_manager_persists_and_restores_tasks(self, monkeypatch, tmp_path):
         import vulnclaw.web.task_manager as task_manager_mod
@@ -663,6 +742,275 @@ class TestWebApp:
         assert (root / "vite.config.ts").exists()
         assert (root / "src" / "main.tsx").exists()
         assert (root / "src" / "App.tsx").exists()
+
+    def test_frontend_toc_navigation_hides_advanced_console(self):
+        root = Path(__file__).resolve().parents[1] / "frontend"
+        app_source = (root / "src" / "App.tsx").read_text(encoding="utf-8")
+        main_source = (root / "src" / "main.tsx").read_text(encoding="utf-8")
+        styles_source = (root / "src" / "styles.css").read_text(encoding="utf-8")
+        settings_source = (root / "src" / "pages" / "SettingsPage.tsx").read_text(
+            encoding="utf-8"
+        )
+        home_source = (root / "src" / "pages" / "HomePage.tsx").read_text(encoding="utf-8")
+        shell_source = (root / "src" / "components" / "AppShell.tsx").read_text(
+            encoding="utf-8"
+        )
+        boundary_source = (root / "src" / "pages" / "SafetyBoundaryPage.tsx").read_text(
+            encoding="utf-8"
+        )
+        history_source = (root / "src" / "pages" / "HistoryPage.tsx").read_text(
+            encoding="utf-8"
+        )
+
+        for key in ["home", "risk", "reports", "boundary", "history", "settings"]:
+            assert f'key: "{key}" as const' in app_source
+
+        assert 'key: "advanced" as const' not in app_source
+        assert 'activeNavView={activeView === "advanced" ? "settings" : activeView}' in app_source
+        assert "onOpenAdvanced" in app_source
+        assert "interface ReportFocus" in app_source
+        assert "HASH_TO_VIEW" in app_source
+        assert 'advanced: "advanced"' in app_source
+        assert "viewFromHash" in app_source
+        assert "navigateToView" in app_source
+        assert "window.location.hash = nextHash" in app_source
+        assert "hashchange" in app_source
+        assert "setReportFocus" in app_source
+        assert "openReports(selectedTarget, path, Boolean(path))" in app_source
+        assert "focus={reportFocus}" in app_source
+        assert "打开高级任务控制台" in settings_source
+        assert "工具链概览" in settings_source
+        assert "可执行服务" in settings_source
+        assert "nmap 可用性" in settings_source
+        assert "高级诊断" in settings_source
+        assert "function handleSelectView" in app_source
+        assert 'setSettingsSection("basic")' in app_source
+        toast_source = (root / "src" / "components" / "ToastHost.tsx").read_text(
+            encoding="utf-8"
+        )
+        assert "actionLabel?: string" in toast_source
+        assert "toast-action-btn" in toast_source
+        assert 'actionLabel: "查看风险结果"' in app_source
+        assert 'actionLabel: "查看技术日志"' in app_source
+        assert 'navigateToView("risk")' in app_source
+        assert 'navigateToView("advanced")' in app_source
+        assert "启动前请再次确认你拥有该目标的测试授权" in home_source
+        assert "三步启动授权安全检查" in home_source
+        assert "输入授权目标" in home_source
+        assert "确认模式与范围" in home_source
+        assert "点击开始检查" in home_source
+        assert ".home-quick-steps" in styles_source
+        assert "可能进行更深入或多轮验证" in home_source
+        assert "inferScopeFromTarget" in home_source
+        assert "由目标自动推断" in home_source
+        assert "effectiveOnlyHost" in home_source
+        assert "effectiveOnlyPort" in home_source
+        assert "effectiveOnlyPath" in home_source
+        validation_source = (root / "src" / "utils" / "validation.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "parseOptionalPort" in home_source
+        assert "parseOptionalPort(defaultOnlyPort)" in settings_source
+        assert "端口必须是 1-65535 之间的数字" in validation_source
+        assert "持续检查暂不支持仅路径范围" in home_source
+        assert "将自动限制在端口" in home_source
+        assert "将自动限制在路径" in home_source
+        assert "setConfirmOpen(true)" in home_source
+        assert "useConfigQuery" in app_source
+        assert "查看检查结论、已验证风险、待复核线索和下一步建议" in app_source
+        assert "查看当前测试范围、越界拦截和规则来源记录" in app_source
+        assert "查看当前约束" not in app_source
+        assert "约束审计" not in app_source
+        assert "configQuery.refetch" in app_source
+        assert "useQueryClient" in app_source
+        assert "refreshTaskData" in app_source
+        assert 'queryKey: ["target-preview", target]' in app_source
+        assert 'queryKey: ["constraint-audit"]' in app_source
+        assert "AppErrorBoundary" in main_source
+        error_boundary_source = (
+            root / "src" / "components" / "AppErrorBoundary.tsx"
+        ).read_text(encoding="utf-8")
+        confirm_source = (
+            root / "src" / "components" / "ConfirmDialog.tsx"
+        ).read_text(encoding="utf-8")
+        assert "VulnClaw 界面遇到问题" in error_boundary_source
+        assert "刷新界面" in error_boundary_source
+        assert 'tone?: "primary" | "danger"' in confirm_source
+        assert 'tone === "danger" ? "danger-btn" : "primary-btn"' in confirm_source
+        assert "event.key === \"Escape\"" in confirm_source
+        assert "removeEventListener(\"keydown\"" in confirm_source
+        assert "cancelButtonRef.current?.focus()" in confirm_source
+        assert 'aria-describedby="confirm-copy"' in confirm_source
+        assert 'id="confirm-copy"' in confirm_source
+        assert ".confirm-copy" in styles_source
+        assert "white-space: pre-line;" in styles_source
+        assert ".toast-action-btn" in styles_source
+        assert 'tone="danger"' in app_source
+        assert "无法连接 VulnClaw 后端" in shell_source
+        assert "重新连接" in shell_source
+        api_source = (root / "src" / "api" / "web.ts").read_text(encoding="utf-8")
+        assert "无法访问 VulnClaw 后端 API" in api_source
+        assert "请求失败" in api_source
+        assert "getReportDownloadUrl" in api_source
+        assert "后端 API 返回了非 JSON 内容" in api_source
+        assert "summarizeErrorDetail" in api_source
+        assert "replace(/<[^>]*>/g" in api_source
+        assert "slice(0, 240)" in api_source
+        banner_source = (root / "src" / "components" / "ActiveTaskBanner.tsx").read_text(
+            encoding="utf-8"
+        )
+        assert "已阻止" in banner_source
+        assert "boundary-alert-btn" in banner_source
+        assert "查看安全边界" in banner_source
+        assert "查看技术日志" in banner_source
+        assert 'task.status === "failed"' in banner_source
+        assert "openBoundaryForActiveTask" in app_source
+        assert 'onOpenAdvanced={() => navigateToView("advanced")}' in app_source
+        reports_source = (root / "src" / "pages" / "ReportsPage.tsx").read_text(
+            encoding="utf-8"
+        )
+        report_preview_source = (
+            root / "src" / "components" / "ReportPreviewDialog.tsx"
+        ).read_text(encoding="utf-8")
+        task_console_source = (
+            root / "src" / "pages" / "TaskConsolePage.tsx"
+        ).read_text(encoding="utf-8")
+        assert "打开原文件" in reports_source
+        assert "focus?: {" in reports_source
+        assert "focus.openPreview" in reports_source
+        assert "setSelectedPath(focus.path)" in reports_source
+        assert "setPreviewOpen(true)" in reports_source
+        assert "导出副本" in reports_source
+        assert "report-empty-state" in reports_source
+        assert "report-filter-empty-state" in reports_source
+        assert "立即生成报告" in reports_source
+        assert "清空筛选并显示全部报告" in reports_source
+        assert "resetReportFilters" in reports_source
+        assert 'useState<"all" | "markdown" | "html">("all")' in reports_source
+        assert "setKindFilter(preferences.reportFormat)" not in reports_source
+        assert "setKindFilter(generateFormat)" in reports_source
+        assert "报告列表默认展示全部格式" in reports_source
+        assert 'sandbox=""' in report_preview_source
+        assert "srcDoc={content}" in report_preview_source
+        assert "event.key === \"Escape\"" in report_preview_source
+        assert "removeEventListener(\"keydown\"" in report_preview_source
+        assert "closeButtonRef.current?.focus()" in report_preview_source
+        assert 'aria-labelledby="report-preview-title"' in report_preview_source
+        assert 'id="report-preview-title"' in report_preview_source
+        assert "parseOptionalPort(onlyPort)" in task_console_source
+        assert 'inputMode="numeric"' in task_console_source
+        assert "ConfirmDialog" in task_console_source
+        assert "requiresRunConfirmation" in task_console_source
+        assert 'command === "exploit" || command === "persistent"' in task_console_source
+        assert "确认启动高风险原始任务" in task_console_source
+        assert "confirmStopOpen" in task_console_source
+        assert "确认停止当前任务" in task_console_source
+        assert "setConfirmStopOpen(true)" in task_console_source
+        assert task_console_source.count('tone="danger"') >= 2
+        assert "handleRunRequest" in task_console_source
+        assert "activeTask={activeTask}" in app_source
+        assert 'onOpenHome={() => navigateToView("home")}' in app_source
+        assert 'onOpenSettings={() => openSettings("boundary")}' in app_source
+        assert "initialSection={settingsSection}" in app_source
+        assert "initialSection" in settings_source
+        risk_source = (root / "src" / "pages" / "RiskResultsPage.tsx").read_text(
+            encoding="utf-8"
+        )
+        assert "risk-empty-state" in risk_source
+        assert "回首页开始检查" in risk_source
+        assert "onOpenReports(generatedReport.path)" in risk_source
+        assert "useQueryClient" in risk_source
+        assert 'queryKey: ["reports"]' in risk_source
+        assert "技术记录默认收起" in risk_source
+        assert "原始 JSON" not in risk_source
+        assert "原始 Target State" not in risk_source
+        assert "taskOptionsToConstraints" in boundary_source
+        assert "boundary-empty-state" in boundary_source
+        assert "回首页设置本次范围" in boundary_source
+        assert "去设置默认边界" in boundary_source
+        assert "normalizeConstraints" in boundary_source
+        assert "allowed_ports" in boundary_source
+        assert "活动任务" in boundary_source
+        assert "已保存范围" in boundary_source
+        assert "已保存测试范围" in boundary_source
+        assert "目标状态" not in boundary_source
+        assert "规则来源和拦截统计" in boundary_source
+        assert "Constraint Audit" not in boundary_source
+        assert "useQueryClient" in history_source
+        assert 'tone="danger"' in history_source
+        assert "history-empty-state" in history_source
+        assert "回首页开始检查" in history_source
+        assert "去首页设置目标" in history_source
+        assert "onOpenHome" in history_source
+        assert "onOpenHome={() => navigateToView(\"home\")}" in app_source
+        assert 'queryKey: ["target", targetValue]' in history_source
+        assert 'queryKey: ["target-preview", targetValue]' in history_source
+        assert 'queryKey: ["target-diff", targetValue]' in history_source
+        labels_source = (root / "src" / "utils" / "taskLabels.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "constraints.allowed_ports" in labels_source
+        assert "formatConstraintValue" in labels_source
+        assert "countConstraintViolations" in labels_source
+        assert "countConstraintViolations" in home_source
+        assert "countConstraintViolations" in boundary_source
+
+    def test_frontend_uses_single_vite_config_source(self):
+        root = Path(__file__).resolve().parents[1] / "frontend"
+
+        assert (root / "vite.config.ts").exists()
+        assert not (root / "vite.config.js").exists()
+        assert not (root / "vite.config.cjs").exists()
+        assert not (root / "vite.config.d.ts").exists()
+
+        tsconfig_node = (root / "tsconfig.node.json").read_text(encoding="utf-8")
+        assert '"noEmit": true' in tsconfig_node
+
+    def test_frontend_pages_are_toc_surfaces(self):
+        pages = Path(__file__).resolve().parents[1] / "frontend" / "src" / "pages"
+        page_names = {path.name for path in pages.glob("*.tsx")}
+
+        assert {
+            "HomePage.tsx",
+            "RiskResultsPage.tsx",
+            "ReportsPage.tsx",
+            "SafetyBoundaryPage.tsx",
+            "HistoryPage.tsx",
+            "SettingsPage.tsx",
+            "TaskConsolePage.tsx",
+        }.issubset(page_names)
+        assert "DashboardPage.tsx" not in page_names
+        assert "TargetStatePage.tsx" not in page_names
+        assert "SnapshotsPage.tsx" not in page_names
+        assert "ConstraintAuditPage.tsx" not in page_names
+
+    def test_frontend_mobile_layout_prevents_shell_overflow(self):
+        styles = (
+            Path(__file__).resolve().parents[1] / "frontend" / "src" / "styles.css"
+        ).read_text(encoding="utf-8")
+
+        assert "@media (max-width: 1080px)" in styles
+        assert "body {\n  margin: 0;\n  min-width: 0;" in styles
+        assert "grid-template-columns: minmax(0, 1fr);" in styles
+        assert "max-width: 100vw;" in styles
+        assert "min-width: 0;" in styles
+        assert ".split-grid" in styles
+        assert ".action-choice-grid" in styles
+        assert ".button-row .primary-btn" in styles
+        assert ".inset-card" in styles
+        assert "max-width: 100%;" in styles
+
+    def test_static_fallback_is_toc_shell(self):
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "vulnclaw" / "web" / "static" / "index.html").read_text(
+            encoding="utf-8"
+        )
+
+        assert "Fallback Web Shell" in source
+        assert "授权安全测试助手" in source
+        assert "输入目标，确认边界，再开始安全检查" in source
+        assert "React 前端仍待后续阶段接入" not in source
+        assert "Phase 1 的最小占位控制台" not in source
 
     def test_cli_web_dry_run(self):
         from vulnclaw.cli.main import app

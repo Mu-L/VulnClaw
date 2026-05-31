@@ -240,6 +240,15 @@ class MCPLifecycleManager:
             )
             return False
 
+        if not probe_overridden and self._is_deferred_package_command(transport):
+            self.registry.set_server_error(
+                name,
+                "stdio probe skipped for package-manager command; install the MCP server "
+                "locally or provide a running server config before attaching",
+                error_type="attach_failed",
+            )
+            return False
+
         ok, details, tools = self._probe_stdio_server(config)
         if not ok:
             self.registry.set_server_error(
@@ -251,6 +260,19 @@ class MCPLifecycleManager:
         if tools:
             self._register_runtime_tools(name, tools)
         return True
+
+    def _is_deferred_package_command(self, transport: Any) -> bool:
+        """Avoid letting health probes trigger package-manager installs/downloads."""
+        command = (transport.command or "").lower()
+        args = [str(arg).lower() for arg in (transport.args or [])]
+
+        if command in {"npx", "pnpx", "bunx"}:
+            return True
+
+        if command == "yarn" and args and args[0] in {"dlx", "exec"}:
+            return True
+
+        return command == "npm" and any(arg in {"exec", "x"} for arg in args)
 
     def _try_attach_sse_client(self, name: str, config: MCPServerConfig) -> bool:
         """Attempt a minimal SSE reachability/config validation before fallback."""

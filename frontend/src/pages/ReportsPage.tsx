@@ -1,26 +1,33 @@
 import { useEffect, useState } from "react";
-import { generateTargetReport } from "../api/web";
+import { generateTargetReport, getReportDownloadUrl } from "../api/web";
 import { ReportPreview, ReportPreviewDialog } from "../components/ReportPreviewDialog";
 import { SectionCard } from "../components/SectionCard";
-import { useReportContentQuery, useReportsQuery } from "../hooks/queries";
+import { useReportContentQuery, useReportsQuery, useTargetsQuery } from "../hooks/queries";
 import type { ReportListItem } from "../types/api";
-import { loadUiPreferences } from "../utils/preferences";
+import { loadUiPreferences, subscribeUiPreferences } from "../utils/preferences";
 
 interface ReportsPageProps {
   selectedTarget: string | null;
+  focus?: {
+    target: string | null;
+    path?: string;
+    openPreview?: boolean;
+  } | null;
 }
 
-export function ReportsPage({ selectedTarget }: ReportsPageProps) {
+export function ReportsPage({ selectedTarget, focus }: ReportsPageProps) {
   const reportsQuery = useReportsQuery();
+  const targetsQuery = useTargetsQuery();
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
-  const contentQuery = useReportContentQuery(selectedPath);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
   const [search, setSearch] = useState(selectedTarget ?? "");
-  const [kindFilter, setKindFilter] = useState<"all" | "markdown" | "html">(() => loadUiPreferences().reportFormat);
+  const [reportTarget, setReportTarget] = useState(selectedTarget ?? "");
+  const [generateFormat, setGenerateFormat] = useState<"markdown" | "html">(() => loadUiPreferences().reportFormat);
+  const [kindFilter, setKindFilter] = useState<"all" | "markdown" | "html">("all");
   const [dateFilter, setDateFilter] = useState<"all" | "today" | "week">("all");
 
   useEffect(() => {
@@ -29,24 +36,55 @@ export function ReportsPage({ selectedTarget }: ReportsPageProps) {
     }
   }, [selectedPath, reportsQuery.data]);
 
+  useEffect(() => subscribeUiPreferences((preferences) => {
+    setGenerateFormat(preferences.reportFormat);
+  }), []);
+
   useEffect(() => {
     if (selectedTarget) {
       setSearch(selectedTarget);
+      setReportTarget(selectedTarget);
     }
   }, [selectedTarget]);
 
+  useEffect(() => {
+    if (!focus) return;
+    if (focus.target) {
+      setSearch(focus.target);
+      setReportTarget(focus.target);
+    }
+    if (focus.path) {
+      setSelectedPath(focus.path);
+    }
+    if (focus.openPreview) {
+      setPreviewOpen(true);
+    }
+  }, [focus]);
+
+  useEffect(() => {
+    if (!reportTarget && targetsQuery.data?.[0]?.target) {
+      setReportTarget(targetsQuery.data[0].target);
+    }
+  }, [reportTarget, targetsQuery.data]);
+
   async function handleGenerate() {
-    if (!selectedTarget) return;
+    const target = reportTarget.trim();
+    if (!target) {
+      setError("请先选择或输入一个要生成报告的目标。");
+      return;
+    }
     try {
       setGenerating(true);
       setError(null);
-      const result = await generateTargetReport(selectedTarget);
+      const result = await generateTargetReport(target, generateFormat);
       setStatus(result.path);
+      setSearch(target);
+      setKindFilter(generateFormat);
       await reportsQuery.refetch();
       setSelectedPath(result.path);
       setPreviewOpen(true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to generate report");
+      setError(err instanceof Error ? err.message : "报告生成失败");
     } finally {
       setGenerating(false);
     }
@@ -63,14 +101,14 @@ export function ReportsPage({ selectedTarget }: ReportsPageProps) {
   }
 
   function handleDownload() {
-    const content = contentQuery.data?.content;
+    const content = previewContent;
     if (!content || !selectedReport) return;
-    const mime = contentQuery.data?.kind === "html" ? "text/html;charset=utf-8" : "text/markdown;charset=utf-8";
+    const mime = previewKind === "html" ? "text/html;charset=utf-8" : "text/markdown;charset=utf-8";
     const blob = new Blob([content], { type: mime });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = selectedReport.name || `vulnclaw-report.${contentQuery.data?.kind === "html" ? "html" : "md"}`;
+    anchor.download = selectedReport.name || `vulnclaw-report.${previewKind === "html" ? "html" : "md"}`;
     document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();
@@ -78,16 +116,39 @@ export function ReportsPage({ selectedTarget }: ReportsPageProps) {
     setCopyStatus("报告已开始下载。");
   }
 
+  function handleOpenReportFile() {
+    if (!selectedReport?.path) return;
+    window.open(getReportDownloadUrl(selectedReport.path), "_blank", "noopener,noreferrer");
+  }
+
+  function resetReportFilters() {
+    setSearch("");
+    setKindFilter("all");
+    setDateFilter("all");
+    setSelectedPath(reports[0]?.path ?? null);
+  }
+
+  function reportStatusCopy(report: ReportListItem | null): string {
+    if (!report) return "选择或生成报告后，会在这里展示交付摘要。";
+    const kind = report.kind === "html" ? "HTML 网页报告" : "Markdown 文档报告";
+    return `${kind} · ${formatSize(report.size_bytes ?? 0)} · ${formatDate(report.modified_at)}`;
+  }
+
   const reports = reportsQuery.data ?? [];
   const filteredReports = reports.filter((report) => reportMatchesFilters(report, search, kindFilter, dateFilter));
   const selectedReport = filteredReports.find((report) => report.path === selectedPath)
-    ?? reports.find((report) => report.path === selectedPath)
     ?? filteredReports[0]
-    ?? reports[0]
     ?? null;
+  const previewPath = selectedReport?.path ?? null;
+  const contentQuery = useReportContentQuery(previewPath);
+  const effectiveSelectedPath = previewPath;
   const markdownCount = reports.filter((report) => report.kind === "markdown").length;
   const htmlCount = reports.filter((report) => report.kind === "html").length;
   const totalSize = reports.reduce((sum, report) => sum + (report.size_bytes ?? 0), 0);
+  const canGenerate = Boolean(reportTarget.trim()) && !generating;
+  const previewContent = selectedReport ? contentQuery.data?.content : undefined;
+  const previewKind = selectedReport ? contentQuery.data?.kind : undefined;
+  const previewLoading = Boolean(selectedReport) && contentQuery.isLoading;
 
   return (
     <section className="reports-page">
@@ -100,20 +161,41 @@ export function ReportsPage({ selectedTarget }: ReportsPageProps) {
           <div>
             <span className="pill">最新报告</span>
             <h3>{selectedReport?.name ?? "暂无报告"}</h3>
-            <p>{selectedReport?.path ?? "选择目标并生成报告后，这里会显示最新交付物。"}</p>
+            <p>{reportStatusCopy(selectedReport)}</p>
           </div>
           <div className="report-actions">
+            <label className="field report-target-field">
+              <span>生成目标</span>
+              <input
+                list="report-targets"
+                value={reportTarget}
+                onChange={(event) => setReportTarget(event.target.value)}
+                placeholder="选择或输入目标"
+              />
+              <datalist id="report-targets">
+                {targetsQuery.data?.map((target) => (
+                  <option key={target.target} value={target.target} />
+                ))}
+              </datalist>
+            </label>
+            <label className="field report-format-field">
+              <span>生成格式</span>
+              <select value={generateFormat} onChange={(event) => setGenerateFormat(event.target.value as "markdown" | "html")}>
+                <option value="markdown">Markdown 文档</option>
+                <option value="html">HTML 网页</option>
+              </select>
+            </label>
             <button
               className="primary-btn"
-              disabled={!selectedTarget || generating}
+              disabled={!canGenerate}
               onClick={handleGenerate}
               type="button"
             >
-              {generating ? "生成中..." : "生成目标报告"}
+              {generating ? "生成中..." : `生成 ${generateFormat === "html" ? "HTML" : "Markdown"} 报告`}
             </button>
             <button
               className="secondary-btn"
-              disabled={!selectedPath}
+              disabled={!selectedReport}
               onClick={() => setPreviewOpen(true)}
               type="button"
             >
@@ -121,12 +203,38 @@ export function ReportsPage({ selectedTarget }: ReportsPageProps) {
             </button>
             <button
               className="secondary-btn"
-              disabled={!contentQuery.data?.content}
-              onClick={handleDownload}
+              disabled={!selectedReport?.path}
+              onClick={handleOpenReportFile}
               type="button"
             >
-              下载当前报告
+              打开原文件
             </button>
+          </div>
+        </div>
+
+        <div className="inline-panel">
+          <strong>生成说明</strong>
+          <p className="inline-note">
+            选择 Markdown 适合归档和二次编辑；选择 HTML 会生成可直接在浏览器中打开的网页报告。报告列表默认展示全部格式，生成完成后会临时切到对应格式，避免新报告被筛选隐藏。
+          </p>
+        </div>
+
+        <div className="report-delivery-card">
+          <div>
+            <span>交付状态</span>
+            <strong>{selectedReport ? "可预览与导出" : "等待生成"}</strong>
+          </div>
+          <div>
+            <span>报告格式</span>
+            <strong>{selectedReport?.kind === "html" ? "HTML" : selectedReport?.kind === "markdown" ? "Markdown" : "未选择"}</strong>
+          </div>
+          <div>
+            <span>更新时间</span>
+            <strong>{selectedReport ? formatDate(selectedReport.modified_at) : "暂无"}</strong>
+          </div>
+          <div>
+            <span>文件位置</span>
+            <strong>{selectedReport?.path ?? "生成后自动记录"}</strong>
           </div>
         </div>
 
@@ -140,8 +248,8 @@ export function ReportsPage({ selectedTarget }: ReportsPageProps) {
             <strong>{htmlCount}</strong>
           </article>
           <article className="stat">
-            <span className="stat-label">当前目标</span>
-            <strong>{selectedTarget ?? "未选择"}</strong>
+            <span className="stat-label">生成目标</span>
+            <strong>{reportTarget || "未选择"}</strong>
           </article>
           <article className="stat">
             <span className="stat-label">总大小</span>
@@ -149,7 +257,7 @@ export function ReportsPage({ selectedTarget }: ReportsPageProps) {
           </article>
         </div>
 
-        {selectedTarget && <p className="inline-note">当前目标: <code>{selectedTarget}</code></p>}
+        {reportTarget && <p className="inline-note">当前生成目标: <code>{reportTarget}</code></p>}
         {status && <div className="success-box">报告已生成: {status}</div>}
         {copyStatus && <div className="success-box">{copyStatus}</div>}
         {error && <div className="error-box">{error}</div>}
@@ -158,7 +266,7 @@ export function ReportsPage({ selectedTarget }: ReportsPageProps) {
       <div className="report-center-grid">
         <SectionCard
           title="报告列表"
-          copy="按目标、格式和时间筛选，点击任意报告可在右侧预览。"
+          copy="这里的格式用于筛选已有报告，不会改变新报告的生成格式。点击任意报告可在右侧预览。"
           aside={<span className="status-badge">{filteredReports.length} / {reports.length}</span>}
         >
           <div className="report-filter-grid">
@@ -188,7 +296,7 @@ export function ReportsPage({ selectedTarget }: ReportsPageProps) {
               <button
                 key={report.path}
                 type="button"
-                className={`list-item list-button report-file-item ${selectedPath === report.path ? "selected-item" : ""}`}
+                className={`list-item list-button report-file-item ${effectiveSelectedPath === report.path ? "selected-item" : ""}`}
                 onClick={() => setSelectedPath(report.path)}
               >
                 <strong>{report.name}</strong>
@@ -197,8 +305,28 @@ export function ReportsPage({ selectedTarget }: ReportsPageProps) {
                 <span className="muted-inline">{report.path}</span>
               </button>
             ))}
-            {!reports.length && <div className="empty-state">还没有生成报告。</div>}
-            {Boolean(reports.length) && !filteredReports.length && <div className="empty-state">没有匹配当前筛选条件的报告。</div>}
+            {!reports.length && (
+              <div className="empty-state report-empty-state">
+                <strong>还没有生成报告</strong>
+                <span>
+                  {reportTarget
+                    ? `可以立即为 ${reportTarget} 生成 ${generateFormat === "html" ? "HTML" : "Markdown"} 报告。`
+                    : "请选择或输入一个目标，生成第一份可交付报告。"}
+                </span>
+                <button className="secondary-btn" disabled={!canGenerate} onClick={handleGenerate} type="button">
+                  {generating ? "生成中..." : "立即生成报告"}
+                </button>
+              </div>
+            )}
+            {Boolean(reports.length) && !filteredReports.length && (
+              <div className="empty-state report-filter-empty-state">
+                <strong>没有匹配当前筛选条件的报告</strong>
+                <span>报告仍然保留在本地，只是被目标、格式或时间筛选暂时隐藏了。</span>
+                <button className="secondary-btn" onClick={resetReportFilters} type="button">
+                  清空筛选并显示全部报告
+                </button>
+              </div>
+            )}
           </div>
         </SectionCard>
 
@@ -207,29 +335,32 @@ export function ReportsPage({ selectedTarget }: ReportsPageProps) {
           copy="优先展示可读报告内容，文件路径和格式信息放在辅助区域。"
           aside={
             <div className="report-preview-actions">
-              <button className="text-btn inline-text-btn" disabled={!contentQuery.data?.content} onClick={handleDownload} type="button">
-                下载
+              <button className="text-btn inline-text-btn" disabled={!previewContent} onClick={handleDownload} type="button">
+                导出副本
+              </button>
+              <button className="text-btn inline-text-btn" disabled={!selectedReport?.path} onClick={handleOpenReportFile} type="button">
+                打开原文件
               </button>
               <button className="text-btn inline-text-btn" disabled={!selectedReport?.path} onClick={() => void handleCopyPath()} type="button">
                 复制路径
               </button>
-              <button className="text-btn inline-text-btn" disabled={!selectedPath} onClick={() => setPreviewOpen(true)} type="button">
+              <button className="text-btn inline-text-btn" disabled={!selectedReport} onClick={() => setPreviewOpen(true)} type="button">
                 放大阅读
               </button>
             </div>
           }
         >
-          <ReportPreview content={contentQuery.data?.content} kind={contentQuery.data?.kind} loading={contentQuery.isLoading} />
+          <ReportPreview content={previewContent} kind={previewKind} loading={previewLoading} />
         </SectionCard>
       </div>
 
       <ReportPreviewDialog
-        open={previewOpen}
+        open={previewOpen && Boolean(selectedReport)}
         title={selectedReport?.name ?? "报告预览"}
         path={selectedReport?.path}
-        content={contentQuery.data?.content}
-        kind={contentQuery.data?.kind}
-        loading={contentQuery.isLoading}
+        content={previewContent}
+        kind={previewKind}
+        loading={previewLoading}
         onDownload={handleDownload}
         onClose={() => setPreviewOpen(false)}
       />

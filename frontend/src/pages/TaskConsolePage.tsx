@@ -1,7 +1,27 @@
 import { useMemo, useState } from "react";
 import { createTask, stopTask } from "../api/web";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import { useTasksQuery } from "../hooks/queries";
-import type { TaskCommand, TaskEvent, TaskRecord } from "../types/api";
+import type { TaskCommand, TaskEvent, TaskOptions, TaskRecord } from "../types/api";
+import {
+  formatActionLabel,
+  formatActionList,
+  formatConstraintSummary,
+  formatEventLabel,
+  formatPhaseLabel,
+  formatTaskCommand,
+  formatTaskStatus,
+  formatTaskTitle,
+} from "../utils/taskLabels";
+import { parseOptionalPort } from "../utils/validation";
+
+const ACTION_OPTIONS = [
+  { value: "recon", copy: "信息收集与基础资产发现。" },
+  { value: "scan", copy: "服务入口识别与风险发现。" },
+  { value: "exploit", copy: "验证利用动作，需要明确授权。" },
+  { value: "persistent", copy: "多轮持续检查能力。" },
+  { value: "post_exploitation", copy: "后渗透动作，默认建议禁止。" },
+];
 
 interface TaskConsolePageProps {
   activeTask: TaskRecord | null;
@@ -20,34 +40,55 @@ export function TaskConsolePage({
 }: TaskConsolePageProps) {
   const tasksQuery = useTasksQuery();
   const [command, setCommand] = useState<TaskCommand>("persistent");
-  const [target, setTarget] = useState("https://example.com");
+  const [target, setTarget] = useState("");
   const [resume, setResume] = useState(true);
   const [maxRounds, setMaxRounds] = useState<number | "">("");
   const [roundsPerCycle, setRoundsPerCycle] = useState<number | "">("");
   const [maxCycles, setMaxCycles] = useState<number | "">("");
   const [cve, setCve] = useState("");
   const [cmd, setCmd] = useState("");
-  const [onlyPort, setOnlyPort] = useState<number | "">("");
+  const [onlyPort, setOnlyPort] = useState("");
   const [onlyHost, setOnlyHost] = useState("");
   const [onlyPath, setOnlyPath] = useState("");
   const [blockedHost, setBlockedHost] = useState("");
   const [blockedPath, setBlockedPath] = useState("");
-  const [allowActions, setAllowActions] = useState("");
-  const [blockActions, setBlockActions] = useState("");
+  const [allowActions, setAllowActions] = useState<string[]>([]);
+  const [blockActions, setBlockActions] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirmRunOpen, setConfirmRunOpen] = useState(false);
+  const [confirmStopOpen, setConfirmStopOpen] = useState(false);
 
   const latestEvents = useMemo(() => events.slice(-24).reverse(), [events]);
+  const requiresRunConfirmation = command === "exploit" || command === "persistent";
+  const scopePreview = formatConstraintSummary({
+    only_port: onlyPort.trim() || undefined,
+    only_host: onlyHost.trim() || undefined,
+    only_path: onlyPath.trim() || undefined,
+    blocked_host: blockedHost.trim() || undefined,
+    blocked_path: blockedPath.trim() || undefined,
+    allow_actions: allowActions.length ? allowActions : undefined,
+    block_actions: blockActions.length ? blockActions : undefined,
+  });
+  const runConfirmCopy = [
+    "你正在从高级控制台启动原始任务。请确认该目标已获得授权，并且下方测试范围没有超出授权边界。",
+    `目标: ${target.trim() || "未填写"}`,
+    `命令: ${formatTaskCommand(command)} (${command})`,
+    `范围: ${scopePreview}`,
+    "建议: 如不确定授权范围，请回到首页使用安全检查向导设置端口、主机或路径边界。",
+  ].join("\n");
 
   function renderEventText(item: TaskEvent): string {
     const payload = item.payload;
-    const cycle = typeof payload.cycle === "number" ? `cycle=${payload.cycle} ` : "";
-    const round = typeof payload.round === "number" ? `round=${payload.round} ` : "";
-    const phase = typeof payload.phase === "string" ? `phase=${payload.phase} ` : "";
+    const parts: string[] = [];
+    if (typeof payload.cycle === "number") parts.push(`第 ${payload.cycle} 个周期`);
+    if (typeof payload.round === "number") parts.push(`第 ${payload.round} 轮`);
+    if (typeof payload.phase === "string") parts.push(formatPhaseLabel(payload.phase));
     const text = typeof payload.text === "string" ? payload.text : "";
     const message = typeof payload.message === "string" ? payload.message : "";
-    const summary = text || message || JSON.stringify(payload);
-    return `${cycle}${round}${phase}${summary}`.trim();
+    const summary = text || message || formatEventLabel(item.event);
+    parts.push(summary);
+    return parts.join(" · ");
   }
 
   function eventTone(eventName: string): "ok" | "warn" | "danger" | "info" {
@@ -58,24 +99,59 @@ export function TaskConsolePage({
     return "info";
   }
 
+  function toggleAction(
+    value: string,
+    selected: string[],
+    setSelected: (next: string[]) => void,
+    oppositeSelected?: string[],
+    setOppositeSelected?: (next: string[]) => void,
+  ) {
+    setSelected(
+      selected.includes(value)
+        ? selected.filter((item) => item !== value)
+        : [...selected, value],
+    );
+    if (!selected.includes(value) && oppositeSelected && setOppositeSelected) {
+      setOppositeSelected(oppositeSelected.filter((item) => item !== value));
+    }
+  }
+
+  function buildTaskOptions(): TaskOptions {
+    return {
+      max_rounds: maxRounds === "" ? undefined : maxRounds,
+      rounds_per_cycle: roundsPerCycle === "" ? undefined : roundsPerCycle,
+      max_cycles: maxCycles === "" ? undefined : maxCycles,
+      cve: cve.trim() || undefined,
+      cmd: cmd.trim() || undefined,
+      only_port: parseOptionalPort(onlyPort),
+      only_host: onlyHost.trim() || undefined,
+      only_path: onlyPath.trim() || undefined,
+      blocked_host: blockedHost.trim() || undefined,
+      blocked_path: blockedPath.trim() || undefined,
+      allow_actions: allowActions.length ? allowActions : undefined,
+      block_actions: blockActions.length ? blockActions : undefined,
+    };
+  }
+
+  function handleRunRequest() {
+    try {
+      setError(null);
+      buildTaskOptions();
+      if (requiresRunConfirmation) {
+        setConfirmRunOpen(true);
+        return;
+      }
+      void handleRun();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "任务参数不正确");
+    }
+  }
+
   async function handleRun() {
     try {
       setSubmitting(true);
       setError(null);
-      const task = await createTask(command, target, resume, {
-        max_rounds: maxRounds === "" ? undefined : maxRounds,
-        rounds_per_cycle: roundsPerCycle === "" ? undefined : roundsPerCycle,
-        max_cycles: maxCycles === "" ? undefined : maxCycles,
-        cve: cve.trim() || undefined,
-        cmd: cmd.trim() || undefined,
-        only_port: onlyPort === "" ? undefined : onlyPort,
-        only_host: onlyHost.trim() || undefined,
-        only_path: onlyPath.trim() || undefined,
-        blocked_host: blockedHost.trim() || undefined,
-        blocked_path: blockedPath.trim() || undefined,
-        allow_actions: allowActions.trim() ? allowActions.split(",").map((item) => item.trim()).filter(Boolean) : undefined,
-        block_actions: blockActions.trim() ? blockActions.split(",").map((item) => item.trim()).filter(Boolean) : undefined,
-      });
+      const task = await createTask(command, target, resume, buildTaskOptions());
       onTaskCreated(task);
       onFocusTarget(task.target);
       await tasksQuery.refetch();
@@ -103,24 +179,25 @@ export function TaskConsolePage({
           <h3>高级任务控制台</h3>
           <p>保留原始命令、SSE 事件和调试参数，建议高级用户在排查问题时使用。</p>
         </div>
-        <span className="status-badge">{activeTask?.status ?? "idle"}</span>
+        <span className="status-badge">{formatTaskStatus(activeTask?.status)}</span>
       </header>
 
       <div className="form-grid">
         <label className="field">
           <span>原始命令</span>
           <select value={command} onChange={(event) => setCommand(event.target.value as TaskCommand)}>
-            <option value="run">run</option>
-            <option value="recon">recon</option>
-            <option value="scan">scan</option>
-            <option value="exploit">exploit</option>
-            <option value="persistent">persistent</option>
+            <option value="run">标准检查</option>
+            <option value="recon">快速摸底</option>
+            <option value="scan">深度扫描</option>
+            <option value="exploit">深度验证</option>
+            <option value="persistent">持续检查</option>
           </select>
+          <small>接口命令: {command}</small>
         </label>
 
         <label className="field field-wide">
           <span>目标</span>
-          <input value={target} onChange={(event) => setTarget(event.target.value)} placeholder="https://target.example" />
+          <input value={target} onChange={(event) => setTarget(event.target.value)} placeholder="输入已授权目标，例如 https://target.example" />
         </label>
 
         <label className="check-row">
@@ -156,15 +233,15 @@ export function TaskConsolePage({
         </label>
         <label className="field">
           <span>CVE 提示</span>
-          <input value={cve} onChange={(event) => setCve(event.target.value)} placeholder="exploit only" />
+          <input value={cve} onChange={(event) => setCve(event.target.value)} placeholder="例如 CVE-2024-xxxx" />
         </label>
         <label className="field">
           <span>仅测试端口</span>
           <input
-            type="number"
+            inputMode="numeric"
             value={onlyPort}
-            onChange={(event) => setOnlyPort(event.target.value ? Number(event.target.value) : "")}
-            placeholder="e.g. 443"
+            onChange={(event) => setOnlyPort(event.target.value)}
+            placeholder="例如 443"
           />
         </label>
         <label className="field">
@@ -183,14 +260,40 @@ export function TaskConsolePage({
           <span>排除路径</span>
           <input value={blockedPath} onChange={(event) => setBlockedPath(event.target.value)} placeholder="/internal" />
         </label>
-        <label className="field">
+        <div className="field field-wide">
           <span>允许动作</span>
-          <input value={allowActions} onChange={(event) => setAllowActions(event.target.value)} placeholder="recon,scan" />
-        </label>
-        <label className="field">
+          <div className="action-choice-grid">
+            {ACTION_OPTIONS.map((action) => (
+              <button
+                key={`advanced-allow-${action.value}`}
+                type="button"
+                className={`action-choice ${allowActions.includes(action.value) ? "selected-item" : ""}`}
+                onClick={() => toggleAction(action.value, allowActions, setAllowActions, blockActions, setBlockActions)}
+              >
+                <strong>{formatActionLabel(action.value)}</strong>
+                <span>{action.copy}</span>
+              </button>
+            ))}
+          </div>
+          <small>{formatActionList(allowActions, "未指定允许动作")}</small>
+        </div>
+        <div className="field field-wide">
           <span>禁止动作</span>
-          <input value={blockActions} onChange={(event) => setBlockActions(event.target.value)} placeholder="exploit,persistent" />
-        </label>
+          <div className="action-choice-grid">
+            {ACTION_OPTIONS.map((action) => (
+              <button
+                key={`advanced-block-${action.value}`}
+                type="button"
+                className={`action-choice action-choice-block ${blockActions.includes(action.value) ? "selected-item" : ""}`}
+                onClick={() => toggleAction(action.value, blockActions, setBlockActions, allowActions, setAllowActions)}
+              >
+                <strong>{formatActionLabel(action.value)}</strong>
+                <span>{action.copy}</span>
+              </button>
+            ))}
+          </div>
+          <small>{formatActionList(blockActions, "未指定禁止动作")}</small>
+        </div>
         <label className="field field-wide">
           <span>命令提示</span>
           <input value={cmd} onChange={(event) => setCmd(event.target.value)} placeholder="验证命令，例如 id" />
@@ -198,15 +301,41 @@ export function TaskConsolePage({
       </div>
 
       <div className="button-row">
-        <button className="primary-btn" disabled={submitting || !target.trim()} onClick={handleRun} type="button">
+        <button className="primary-btn" disabled={submitting || !target.trim()} onClick={handleRunRequest} type="button">
           {submitting ? "启动中..." : "启动原始任务"}
         </button>
-        <button className="secondary-btn" disabled={!activeTask || activeTask.status !== "running"} onClick={handleStop} type="button">
+        <button className="secondary-btn" disabled={!activeTask || activeTask.status !== "running"} onClick={() => setConfirmStopOpen(true)} type="button">
           停止任务
         </button>
       </div>
 
       {error && <div className="error-box">{error}</div>}
+
+      <ConfirmDialog
+        open={confirmRunOpen}
+        title="确认启动高风险原始任务"
+        copy={runConfirmCopy}
+        tone="danger"
+        confirmLabel="确认启动"
+        onCancel={() => setConfirmRunOpen(false)}
+        onConfirm={() => {
+          setConfirmRunOpen(false);
+          void handleRun();
+        }}
+      />
+
+      <ConfirmDialog
+        open={confirmStopOpen}
+        title="确认停止当前任务"
+        copy={`停止后当前任务不会继续执行，已经保存的目标状态和报告不会被删除。\n目标: ${activeTask?.target ?? "未知目标"}\n任务: ${activeTask ? formatTaskTitle(activeTask.command, activeTask.target) : "未选择任务"}`}
+        tone="danger"
+        confirmLabel="确认停止"
+        onCancel={() => setConfirmStopOpen(false)}
+        onConfirm={() => {
+          setConfirmStopOpen(false);
+          void handleStop();
+        }}
+      />
 
       <div className="split-grid inner-grid">
         <article className="card inset-card">
@@ -222,11 +351,11 @@ export function TaskConsolePage({
                   onFocusTarget(task.target);
                 }}
               >
-                <strong>{task.command} · {task.target}</strong>
-                <span>{task.status}</span>
-                <span className="muted-inline">{task.latest_phase ?? task.created_at}</span>
+                <strong>{formatTaskTitle(task.command, task.target)}</strong>
+                <span>{formatTaskStatus(task.status)}</span>
+                <span className="muted-inline">{task.latest_phase ? formatPhaseLabel(task.latest_phase) : task.created_at}</span>
                 {task.summary?.constraints && Object.keys(task.summary.constraints).length > 0 && (
-                  <span className="muted-inline">constraints={JSON.stringify(task.summary.constraints)}</span>
+                  <span className="muted-inline">{formatConstraintSummary(task.summary.constraints)}</span>
                 )}
               </button>
             ))}
@@ -239,12 +368,12 @@ export function TaskConsolePage({
           <div className="terminal terminal-scroll">
             {activeTask ? (
               <>
-                <div className="terminal-line">[task] {activeTask.task_id}</div>
-                <div className="terminal-line">[command] {activeTask.command}</div>
-                <div className="terminal-line">[target] {activeTask.target}</div>
-                <div className="terminal-line dim">[phase] {activeTask.latest_phase ?? "unknown"}</div>
+                <div className="terminal-line">任务 ID: {activeTask.task_id}</div>
+                <div className="terminal-line">检查模式: {formatTaskCommand(activeTask.command)} ({activeTask.command})</div>
+                <div className="terminal-line">目标: {activeTask.target}</div>
+                <div className="terminal-line dim">阶段: {formatPhaseLabel(activeTask.latest_phase)}</div>
                 {activeTask.summary?.constraints && Object.keys(activeTask.summary.constraints).length > 0 && (
-                  <div className="terminal-line dim">[constraints] {JSON.stringify(activeTask.summary.constraints)}</div>
+                  <div className="terminal-line dim">边界: {formatConstraintSummary(activeTask.summary.constraints)}</div>
                 )}
               </>
             ) : (
@@ -253,7 +382,7 @@ export function TaskConsolePage({
 
             {latestEvents.map((item) => (
               <div key={`${item.timestamp}-${item.event}`} className="terminal-line terminal-row">
-                <span className={`terminal-event tone-${eventTone(item.event)}`}>[{item.event}]</span>
+                <span className={`terminal-event tone-${eventTone(item.event)}`}>{formatEventLabel(item.event)}</span>
                 <span className="terminal-time">
                   {new Date(item.timestamp).toLocaleTimeString()}
                 </span>

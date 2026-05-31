@@ -5,6 +5,8 @@ export interface ToastItem {
   tone: ToastTone;
   title: string;
   copy?: string;
+  actionLabel?: string;
+  onAction?: () => void;
 }
 
 interface ToastHostProps {
@@ -22,8 +24,20 @@ export function ToastHost({ toasts, onDismiss }: ToastHostProps) {
           <div>
             <strong>{toast.title}</strong>
             {toast.copy && <p>{toast.copy}</p>}
+            {toast.actionLabel && toast.onAction && (
+              <button
+                type="button"
+                className="toast-action-btn"
+                onClick={() => {
+                  toast.onAction?.();
+                  onDismiss(toast.id);
+                }}
+              >
+                {toast.actionLabel}
+              </button>
+            )}
           </div>
-          <button type="button" aria-label="关闭通知" onClick={() => onDismiss(toast.id)}>
+          <button type="button" className="toast-close-btn" aria-label="关闭通知" onClick={() => onDismiss(toast.id)}>
             ×
           </button>
         </article>

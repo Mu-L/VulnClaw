@@ -5,8 +5,9 @@ import pytest
 
 def test_import_vulnclaw():
     """Test that the main package can be imported."""
-    import tomllib
     from pathlib import Path
+
+    import tomllib
 
     import vulnclaw
 

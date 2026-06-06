@@ -174,6 +174,7 @@ def _run_repl() -> None:
     # Track current target
     current_target: Optional[str] = None
     current_phase: str = "Ready"
+    exit_requested = False
 
     while True:
         try:
@@ -481,6 +482,10 @@ def _run_repl() -> None:
                 console.print(_("cli.error", msg=rich_escape(str(e))))
 
         except KeyboardInterrupt:
+            if exit_requested:
+                console.print(_("cli.bye"))
+                break
+            exit_requested = True
             console.print(f"\n{_('cli.press_again')}")
         except EOFError:
             break
@@ -1219,17 +1224,17 @@ def init() -> None:
 
     config = load_config()
     save_config(config)
-    console.print("[+] Config file created: ~/.vulnclaw/config.yaml")
-    console.print("[+] Initialized directories:")
-    console.print("    ~/.vulnclaw/sessions/")
-    console.print("    ~/.vulnclaw/kb/")
-    console.print("    ~/.vulnclaw/skills/")
+    console.print(_("cli.init.config_created"))
+    console.print(_("cli.init.dirs_initialized"))
+    console.print(_("cli.init.dir_sessions"))
+    console.print(_("cli.init.dir_kb"))
+    console.print(_("cli.init.dir_skills"))
     console.print()
-    console.print("[bold]Next steps[/]:")
-    console.print("  1. Choose a provider: [bold]vulnclaw config provider minimax[/]")
-    console.print("  2. Set an API key:   [bold]vulnclaw config set llm.api_key <your-key>[/]")
-    console.print("  3. Start the CLI:    [bold]vulnclaw[/]")
-    console.print("  4. Open the TUI:     [bold]vulnclaw tui[/]")
+    console.print(_("cli.init.next_steps"))
+    console.print(_("cli.init.step_provider"))
+    console.print(_("cli.init.step_api_key"))
+    console.print(_("cli.init.step_cli"))
+    console.print(_("cli.init.step_tui"))
 
 
 # 鈹€鈹€ Doctor command 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€

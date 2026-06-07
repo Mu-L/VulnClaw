@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import time
 from typing import Optional
 
 
@@ -176,6 +177,7 @@ def _run_repl() -> None:
     current_phase: str = "Ready"
     exit_requested = False
     auto_mode_active = False
+    _last_ctrlc_time = 0.0
     last_auto_input: str = ""
 
     while True:
@@ -518,10 +520,12 @@ def _run_repl() -> None:
                 console.print(_("cli.error", msg=rich_escape(str(e))))
 
         except KeyboardInterrupt:
-            if exit_requested:
+            now = time.monotonic()
+            if exit_requested and (now - _last_ctrlc_time) < 3.0:
                 console.print(_("cli.bye"))
                 break
             exit_requested = True
+            _last_ctrlc_time = now
             console.print(f"\n{_('cli.press_again')}")
         except EOFError:
             break

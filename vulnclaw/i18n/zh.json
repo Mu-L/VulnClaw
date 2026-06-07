@@ -8,7 +8,7 @@
   "cli.bye": "[dim]再见！[/]",
   "cli.interrupted": "[!] 用户中断",
   "cli.error": "[!] 错误: {msg}",
-  "cli.press_again": "[dim]再次按 Ctrl+C 或输入 exit 退出 REPL[/]",
+  "cli.press_again": "[dim]3 秒内再次按 Ctrl+C 退出 REPL[/]",
   "cli.target_switch": "[dim][*] 目标切换: {from_target} -> {to_target}, 正在重置会话上下文[/]",
   "cli.target_set": "[+] 目标已设置: [bold]{target}[/]",
   "cli.target_restored": "[+] 已恢复保存的目标状态: [bold]{target}[/]",

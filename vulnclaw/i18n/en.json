@@ -8,7 +8,7 @@
   "cli.bye": "[dim]Bye![/]",
   "cli.interrupted": "[!] Interrupted by user",
   "cli.error": "[!] Error: {msg}",
-  "cli.press_again": "[dim]Press Ctrl+C again or type exit to leave the REPL[/]",
+  "cli.press_again": "[dim]Press Ctrl+C again within 3 seconds to exit REPL[/]",
   "cli.target_switch": "[dim][*] Target switch: {from_target} -> {to_target}, resetting session context[/]",
   "cli.target_set": "[+] Target set: [bold]{target}[/]",
   "cli.target_restored": "[+] Restored saved target state: [bold]{target}[/]",

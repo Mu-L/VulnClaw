@@ -76,3 +76,4 @@ pnpm-debug.log*
 # Local docs / local-only artifacts
 docs/
 .test-tmp/
+版本号文件.png

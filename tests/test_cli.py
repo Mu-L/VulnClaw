@@ -580,7 +580,7 @@ class TestCLI:
         assert "运行概览" in result.output
         assert "未选择目标" in result.output
         assert "安全边界" in result.output
-        assert "操作菜单" in result.output
+        # [修改] 新版 TUI 使用 slash 命令系统替代了数字菜单, 移除 "操作菜单" 断言
 
     def test_tui_once_renders_target_overview(self, runner, monkeypatch):
         import vulnclaw.cli.tui as tui_mod

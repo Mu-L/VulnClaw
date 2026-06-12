@@ -1758,7 +1758,7 @@ def _extract_target_from_input(user_input: str) -> Optional[str]:
     if ip_match:
         return ip_match.group(1)
     # Try to find domain
-    domain_match = re.search(r"([a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,})", user_input)
+    domain_match = re.search(r"([a-zA-Z0-9][-a-zA-Z0-9]*(?:\.[a-zA-Z0-9][-a-zA-Z0-9]*)+)", user_input)
     if domain_match:
         return domain_match.group(1)
     return None
